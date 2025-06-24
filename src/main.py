@@ -27,8 +27,9 @@ templates = Jinja2Templates(directory="templates")
 # --- In-memory state management ---
 # These variables will hold the current state of the application.
 # In a real-world scenario, you might use a database or a more robust state management solution.
-SHELF_ROWS = 5
-SHELF_COLS = 10
+# --- CHANGED: Updated shelf dimensions to 4x6 ---
+SHELF_ROWS = 4
+SHELF_COLS = 6
 job_queue: List[Job] = []
 active_job: Optional[Job] = None
 # Initialize an empty shelf state
