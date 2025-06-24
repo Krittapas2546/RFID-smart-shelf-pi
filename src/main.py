@@ -1,137 +1,129 @@
-import multiprocessing
-import socket
+import asyncio
 import json
-from queue import Empty
-import tkinter as tk
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from typing import List, Optional
 
-# =============================================================================
-# 1. Server Process: รอรับข้อมูลจาก Client (เช่น api_test.py)
-# =============================================================================
-def server_process(job_queue, host='0.0.0.0', port=65432):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, port))
-        s.listen()
-        print(f"✅ Server listening on {host}:{port}")
+# --- Models for incoming data ---
+class Location(BaseModel):
+    row: int
+    col: int
+
+class Job(BaseModel):
+    lotNo: str
+    formTo: str  # Renamed from 'from' to avoid keyword conflict
+    employeeId: str
+    timestamp: str
+    status: str
+    location: Optional[Location] = None
+    error: bool = False
+
+# --- Basic App Setup ---
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
+
+# --- In-memory state management ---
+# These variables will hold the current state of the application.
+# In a real-world scenario, you might use a database or a more robust state management solution.
+SHELF_ROWS = 5
+SHELF_COLS = 10
+job_queue: List[Job] = []
+active_job: Optional[Job] = None
+# Initialize an empty shelf state
+global_shelf_state = [[False for _ in range(SHELF_COLS)] for _ in range(SHELF_ROWS)]
+
+# --- WebSocket Connection Manager ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"New client connected. Total clients: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        print(f"Client disconnected. Total clients: {len(self.active_connections)}")
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+manager = ConnectionManager()
+
+# --- API Endpoint to receive new jobs ---
+@app.post("/api/submit_job")
+async def submit_job(job: Job):
+    """
+    This endpoint receives a new job from an external system.
+    It updates the application's state and broadcasts the new state to all connected clients.
+    """
+    global active_job, job_queue, global_shelf_state
+
+    print(f"Received new job: {job.lotNo}")
+
+    # Set the new job as the active job and update the queue
+    # For simplicity, we'll only show the latest job in the queue
+    active_job = job
+    job_queue = [job]
+
+    # Update the shelf state based on the new job's location
+    # 1. Reset the entire shelf state
+    global_shelf_state = [[False for _ in range(SHELF_COLS)] for _ in range(SHELF_ROWS)]
+    # 2. If the new job has a location, mark it as active
+    if job.location:
+        if 0 <= job.location.row < SHELF_ROWS and 0 <= job.location.col < SHELF_COLS:
+            global_shelf_state[job.location.row][job.location.col] = True
+        else:
+            print(f"Warning: Job location {job.location} is out of bounds for the shelf.")
+
+
+    # Prepare the data packet to be sent to the UI
+    update_data = {
+        "type": "job_update",
+        "job": active_job.model_dump(),  # Use .model_dump() for Pydantic v2+
+        "shelf_state": global_shelf_state,
+    }
+
+    # Broadcast the update to all connected WebSocket clients
+    await manager.broadcast(json.dumps(update_data))
+
+    return {"status": "success", "message": f"Job {job.lotNo} received and broadcasted."}
+
+
+# --- WebSocket Endpoint for real-time UI updates ---
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        # When a client first connects, send them the current state
+        # This ensures the UI is populated immediately without waiting for a new job
+        if active_job:
+            initial_data = {
+                "type": "job_update",
+                "job": active_job.model_dump(),
+                "shelf_state": global_shelf_state,
+            }
+            await websocket.send_text(json.dumps(initial_data))
+
+        # Keep the connection alive to receive further updates
         while True:
-            try:
-                conn, addr = s.accept()
-                with conn:
-                    print(f"🤝 Connected by {addr}")
-                    data = conn.recv(4096)
-                    if not data:
-                        continue
-
-                    # สมมติว่าข้อมูลที่เข้ามาอาจมีหลาย JSON object ต่อกัน
-                    decoded_data = data.decode('utf-8')
-                    # แยก JSON objects ที่อาจจะติดกันมา
-                    for job_str in decoded_data.strip().split('}'):
-                        if not job_str.strip():
-                            continue
-                        try:
-                            # เพิ่ม '}' กลับเข้าไปเพื่อให้เป็น JSON ที่สมบูรณ์
-                            full_job_str = job_str + '}'
-                            job = json.loads(full_job_str)
-                            print(f"📥 Received Full Job Data:\n{json.dumps(job, indent=2)}")
-                            job_queue.put(job)
-                        except json.JSONDecodeError as e:
-                            print(f"❌ JSON Decode Error: {e} for data: '{job_str}'")
-
-            except Exception as e:
-                print(f"An error occurred in server process: {e}")
+            # We are just keeping the connection open.
+            # The server will proactively push updates via manager.broadcast()
+            # The client doesn't need to send any messages.
+            await asyncio.sleep(1)
+            
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"An error occurred in the WebSocket connection: {e}")
+        manager.disconnect(websocket)
 
 
-# =============================================================================
-# 2. UI Process: สร้างหน้าจอและอัปเดตข้อมูลจาก Queue
-# =============================================================================
-def ui_process(job_queue):
-    root = tk.Tk()
-    root.title("Automated Warehouse Shelf - Detailed View")
-    root.geometry("1600x900")
-
-    rows, cols = 5, 10
-    shelf_labels = [[None for _ in range(cols)] for _ in range(rows)]
-
-    for r in range(rows):
-        for c in range(cols):
-            frame = tk.Frame(root, width=150, height=100, borderwidth=1, relief="solid")
-            frame.grid(row=r, column=c, padx=5, pady=5)
-            frame.pack_propagate(False)
-
-            # ใช้ f-string ที่ถูกต้องสำหรับข้อความเริ่มต้น
-            initial_text = f"({r},{c})\nEmpty"
-            details_label = tk.Label(
-                frame,
-                text=initial_text,
-                font=("Arial", 8),
-                justify=tk.LEFT,
-                wraplength=140,
-                bg="#f0f0f0" # สีพื้นหลังเริ่มต้น
-            )
-            details_label.pack(fill="both", expand=True, padx=2, pady=2)
-            shelf_labels[r][c] = {'details': details_label}
-
-    def check_for_jobs():
-        try:
-            job = job_queue.get_nowait()
-            print(f"🎨 UI updating with data: {job}")
-
-            location_data = job.get("location")
-            action = job.get("action", "PUT").upper() # ตั้งค่าเริ่มต้นเป็น PUT และแปลงเป็นตัวพิมพ์ใหญ่
-
-            if isinstance(location_data, dict):
-                row = location_data.get("row")
-                col = location_data.get("col")
-
-                # ตรวจสอบว่าพิกัดถูกต้องและอยู่ในขอบเขต
-                if isinstance(row, int) and isinstance(col, int) and (0 <= row < rows and 0 <= col < cols):
-                    target_label = shelf_labels[row][col]['details']
-
-                    if action == "PUT":
-                        # สร้างข้อความรายละเอียดจากข้อมูล Job
-                        details_text = ""
-                        for key, value in job.items():
-                            # ไม่แสดงข้อมูลที่ไม่จำเป็นใน UI
-                            if key in ["location", "PositionSTK"]:
-                                continue
-                            details_text += f"{key}: {value}\n"
-                        details_text = details_text.strip()
-
-                        target_label.config(
-                            text=details_text,
-                            fg="black",
-                            bg="#e0e8ff"  # สีฟ้าอ่อนสำหรับของที่เข้ามาใหม่
-                        )
-                    else:  # สำหรับ action อื่นๆ เช่น GET, MOVE หรือเมื่อนำของออก
-                        target_label.config(
-                            text=f"({row},{col})\nEmpty", # คืนค่าเป็น Empty
-                            fg="black",
-                            bg="#f0f0f0"  # คืนค่าสีพื้นหลังเป็นสีเทาอ่อน
-                        )
-                else:
-                    print(f"⚠️ Invalid location coordinates: (row={row}, col={col})")
-            else:
-                print(f"⚠️ Job is missing 'location' key or it's not a dictionary: {job}")
-
-        except Empty:
-            pass
-        finally:
-            root.after(100, check_for_jobs)
-
-    print("✅ UI process started.")
-    check_for_jobs()
-    root.mainloop()
-
-
-
-if __name__ == "__main__":
-    print("🚀 Starting Main Application...")
-    job_queue = multiprocessing.Queue()
-
-    p_server = multiprocessing.Process(target=server_process, args=(job_queue,), daemon=True)
-    p_ui = multiprocessing.Process(target=ui_process, args=(job_queue,))
-
-    p_server.start()
-    p_ui.start()
-
-    p_ui.join()
-    print("UI process finished. Exiting application.")
+# --- Frontend Endpoint to serve the HTML page ---
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    return templates.TemplateResponse("shelf_ui.html", {"request": request})

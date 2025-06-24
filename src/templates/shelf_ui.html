@@ -56,6 +56,7 @@
         .details-panel .lot-no { font-size: 62px; font-weight: 800; }
         .status-badge { background-color: #6c757d; color: white; padding: 8px 28px; border-radius: 24px; font-weight: 700; font-size: 1.45em; display: inline-block; }
         .status-badge.Waiting { background-color: #0d6efd; }
+        .status-badge.Processing { background-color: #ffc107; color: #000; }
         .status-badge.Error { background-color: #dc3545; }
         .shelf-panel h2 { font-size: 2em; color: #343a40; margin: 0 0 20px 0; text-align: center; }
         .shelf-grid { display: grid; grid-template-rows: repeat(4, 60px); grid-template-columns: repeat(6, 60px); gap: 7px; padding: 12px; background-color: #f8f9fa; border: 1px solid #dee2e6; }
@@ -145,7 +146,13 @@
         const shelfContainer = document.getElementById('shelfContainer');
 
         const ROWS = 4, COLS = 6;
-        const GLOBAL_SHELF_STATE_KEY = 'globalShelfState';
+        
+        // --- START: ส่วนที่แก้ไข ---
+        // ไม่ใช้ localStorage แล้ว แต่จะใช้ตัวแปรในหน้าเว็บเก็บสถานะแทน
+        let jobQueue = [];
+        let activeJob = null;
+        let globalShelfState = [];
+        // --- END: ส่วนที่แก้ไข ---
 
         function openDrawer() { queueDrawer.classList.add('open'); drawerBackdrop.classList.add('open'); document.getElementById('mainContent').classList.add('blurred'); }
         function closeDrawer() { queueDrawer.classList.remove('open'); drawerBackdrop.classList.remove('open'); document.getElementById('mainContent').classList.remove('blurred'); }
@@ -158,9 +165,6 @@
             shelfGrid.appendChild(cell);
         }
 
-        function getActiveJob() { return JSON.parse(localStorage.getItem('activeShelfJob') || 'null'); }
-        function setActiveJob(job) { localStorage.setItem('activeShelfJob', JSON.stringify(job)); }
-        
         function renderShelfFromState(shelfState) {
             document.querySelectorAll('.shelf-cell').forEach(c => c.className = 'shelf-cell');
             if (Array.isArray(shelfState)) {
@@ -176,18 +180,15 @@
         }
 
         function renderQueueList() {
-            const queue = JSON.parse(localStorage.getItem('shelfQueue') || '[]');
             queueListEl.innerHTML = '';
             
-            if (queue.length === 0) {
+            if (jobQueue.length === 0) {
                 queueListEl.innerHTML = '<li class="queue-placeholder">No jobs in queue...</li>';
                 closeDrawer();
                 return;
             }
 
-            // *** START: จุดแก้ไขที่ 1 ***
-            // เพิ่มตัวแปร index เข้ามาเพื่อนับลำดับของงานแต่ละชิ้น
-            queue.forEach((job, index) => {
+            jobQueue.forEach((job, index) => {
                 const item = document.createElement('li');
                 item.className = 'queue-item';
                 item.innerHTML = `
@@ -199,9 +200,8 @@
                 `;
                 queueListEl.appendChild(item);
             });
-            // *** END: จุดแก้ไขที่ 1 ***
 
-            if (queue.length > 1 && !getActiveJob()) {
+            if (jobQueue.length > 1 && !activeJob) {
                 openDrawer();
             } else {
                 closeDrawer();
@@ -209,18 +209,15 @@
         }
 
         function goBackToQueue() {
-            localStorage.removeItem('activeShelfJob');
+            activeJob = null;
             renderAll();
         }
 
         function renderActiveJob() {
-            const activeJob = getActiveJob();
-            
             shelfContainer.classList.remove('error-state', 'full-shelf-mode');
             detailsPanel.style.display = 'flex';
 
-            const currentShelfState = JSON.parse(localStorage.getItem(GLOBAL_SHELF_STATE_KEY) || '[]');
-            renderShelfFromState(currentShelfState);
+            renderShelfFromState(globalShelfState);
 
             if (!activeJob) {
                 shelfContainer.classList.add('full-shelf-mode');
@@ -250,58 +247,76 @@
             }
         }
 
-        // *** START: จุดแก้ไขที่ 2 ***
-        // แก้ไข Event Listener ให้ทำงานกับ job-index แทน job-id
         queueListEl.addEventListener('click', function(event) {
             if (event.target.tagName === 'BUTTON' && event.target.dataset.jobIndex) {
                 const jobIndex = parseInt(event.target.dataset.jobIndex, 10);
-                const queue = JSON.parse(localStorage.getItem('shelfQueue') || '[]');
-                // เลือกงานจากลำดับใน Array (ซึ่งจะไม่ซ้ำกันแน่นอน)
-                const selectedJob = queue[jobIndex];
+                const selectedJob = jobQueue[jobIndex];
                 if (selectedJob) {
-                    setActiveJob(selectedJob);
+                    activeJob = selectedJob;
                     renderAll(); 
                     closeDrawer();
                 }
             }
         });
-        // *** END: จุดแก้ไขที่ 2 ***
 
         function renderAll() {
             shelfContainer.style.display = 'flex';
-            const queue = JSON.parse(localStorage.getItem('shelfQueue') || '[]');
-
-            // ตรวจสอบและล้าง active job ถ้าจำเป็น เพื่อให้หน้าต่างเลือกเปิดขึ้นมา
-            if (queue.length > 1 && getActiveJob()) {
-                const activeJobInQueue = queue.some(job => JSON.stringify(job) === JSON.stringify(getActiveJob()));
-                // ถ้า active job ยังอยู่ในคิว และผู้ใช้ไม่ได้เลือกเอง (กรณีมาจาก auto-select)
-                // การลบ activeJob จะทำให้เงื่อนไข !getActiveJob() เป็นจริง และ drawer จะเปิด
-                // เราจะทำให้ง่ายขึ้นโดยการลบ active job ทุกครั้งที่คิวมีมากกว่า 1 และมีการเปลี่ยนแปลง
-                // แต่เพื่อความปลอดภัย เราจะลบเฉพาะเมื่อ active job นั้นมาจากการ auto-select
-                // อย่างไรก็ตาม การตัดสินใจว่ามาจากการ auto-select นั้นซับซ้อน
-                // ดังนั้นทางแก้ที่ได้ผลคือการบังคับให้เลือกใหม่เมื่อกลับมาที่หน้าจอที่มีหลายคิว
-                // `goBackToQueue` ทำหน้าที่นี้อยู่แล้ว
-            } else if (queue.length === 1 && !getActiveJob()) {
-                setActiveJob(queue[0]);
+            
+            // ถ้ามี Job ในคิวแค่ 1 งาน ให้ตั้งเป็น Active Job อัตโนมัติ
+            if (jobQueue.length === 1 && !activeJob) {
+                activeJob = jobQueue[0];
             }
 
             renderQueueList();
             renderActiveJob();
         }
 
-        window.addEventListener('storage', (event) => {
-            // เพิ่มเงื่อนไข: ถ้าคิวเปลี่ยนจาก 1 เป็น 2 (หรือมากกว่า) ให้ล้าง Active Job เพื่อบังคับให้เลือกใหม่
-            if (event.key === 'shelfQueue') {
-                const oldQueue = JSON.parse(event.oldValue || '[]');
-                const newQueue = JSON.parse(event.newValue || '[]');
-                if (oldQueue.length === 1 && newQueue.length > 1) {
-                    localStorage.removeItem('activeShelfJob');
+        // --- START: ส่วนที่เพิ่มเข้ามาใหม่ ---
+        function connectWebSocket() {
+            const ws = new WebSocket(`ws://${window.location.host}/ws`);
+
+            ws.onopen = function(event) {
+                console.log("WebSocket connection established.");
+                // อาจจะส่งข้อความบางอย่างเพื่อบอก server ว่าพร้อมแล้ว (ถ้าจำเป็น)
+            };
+
+            ws.onmessage = function(event) {
+                console.log("Data received:", event.data);
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'job_update') {
+                    // เพิ่ม job ใหม่เข้าไปในคิว (อาจจะต้องมีการจัดการไม่ให้ซ้ำ)
+                    // เพื่อความง่าย จะสมมติว่าทุก job ที่มาคือ job ใหม่ และแสดงผลล่าสุด
+                    
+                    // อัปเดตคิว (ในตัวอย่างนี้จะใช้ job ล่าสุดเป็น active job)
+                    // ในระบบจริงอาจจะต้องจัดการคิวที่ซับซ้อนกว่านี้
+                    activeJob = data.job;
+                    jobQueue = [data.job]; // แสดงแค่ job ล่าสุดในคิว (ปรับแก้ตามต้องการ)
+
+                    // อัปเดตสถานะของชั้นวางทั้งหมด
+                    globalShelfState = data.shelf_state;
+
+                    // วาดหน้าจอใหม่ทั้งหมดด้วยข้อมูลล่าสุด
+                    renderAll();
                 }
-            }
-            renderAll();
-        });
+            };
+
+            ws.onclose = function(event) {
+                console.log("WebSocket connection closed. Reconnecting in 3 seconds...");
+                setTimeout(connectWebSocket, 3000); // พยายามเชื่อมต่อใหม่
+            };
+
+            ws.onerror = function(event) {
+                console.error("WebSocket error observed:", event);
+                ws.close(); // ปิดการเชื่อมต่อเมื่อมี error เพื่อให้ onclose ทำงาน
+            };
+        }
         
+        // เริ่มการทำงานทั้งหมด
         renderAll();
+        connectWebSocket();
+        // --- END: ส่วนที่เพิ่มเข้ามาใหม่ ---
+
     </script>
 </body>
 </html>
