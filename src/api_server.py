@@ -53,22 +53,29 @@ shelf_state_manager = ShelfStateManager(rows=4, cols=6)
 # --- Socket Server for RFID Reader ---
 async def run_socket_server(host='0.0.0.0', port=65432):
     """Runs a TCP socket server to listen for data from the RFID reader."""
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((host, port))
-    server_socket.listen()
-    server_socket.setblocking(False)  # Non-blocking for asyncio
-    logging.info(f"✅ Socket Server is listening on {host}:{port}")
+    try:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((host, port))
+        server_socket.listen(5)  # Allow up to 5 connections
+        server_socket.setblocking(False)  # Non-blocking for asyncio
+        logging.info(f"✅ Socket Server is listening on {host}:{port}")
 
-    loop = asyncio.get_event_loop()
-    while True:
-        try:
-            conn, addr = await loop.sock_accept(server_socket)
-            logging.info(f"🤝 Connection received from {addr}")
-            asyncio.create_task(handle_socket_client(conn))
-        except Exception as e:
-            logging.error(f"Error in socket server: {e}")
-            await asyncio.sleep(1) # Prevent busy-looping on error
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                conn, addr = await loop.sock_accept(server_socket)
+                logging.info(f"🤝 Connection received from {addr}")
+                asyncio.create_task(handle_socket_client(conn))
+            except Exception as e:
+                # ลดระดับ log เพื่อไม่ให้รบกวน
+                if "Invalid argument" not in str(e):
+                    logging.debug(f"Socket server minor error: {e}")
+                await asyncio.sleep(0.1)  # Short delay to prevent busy-looping
+    except Exception as e:
+        logging.error(f"Failed to start socket server: {e}")
+        # ถ้า socket server ไม่สามารถเริ่มได้ ให้ server ทำงานต่อได้
+        pass
 
 
 async def handle_socket_client(conn: socket.socket):
@@ -153,4 +160,18 @@ async def websocket_endpoint(websocket: WebSocket):
         logging.warning(f"WebSocket client disconnected: {websocket.client.host}")
     except Exception as e:
         logging.error(f"Error in WebSocket communication: {e}")
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    import uvicorn
+    logging.info("Starting API server on http://localhost:8001")
+    # ปรับการตั้งค่า uvicorn เพื่อลดคำเตือน
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8001,
+        log_level="info",
+        access_log=True
+    )
 

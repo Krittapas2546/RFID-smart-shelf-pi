@@ -1,146 +1,165 @@
+import os
 import asyncio
 import json
+import logging
+from multiprocessing import Process, Queue
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles  # <-- 1. เพิ่ม import นี้
-from pydantic import BaseModel
-from typing import List, Optional
-from pathlib import Path  # <-- 2. เพิ่ม import นี้
+import uvicorn
 
-# --- Models for incoming data ---
-class Location(BaseModel):
-    row: int
-    col: int
+# --- Logging Setup ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class Job(BaseModel):
-    lotNo: str
-    formTo: str  # Renamed from 'from' to avoid keyword conflict
-    employeeId: str
-    timestamp: str
-    status: str
-    location: Optional[Location] = None
-    error: bool = False
+# --- Configuration ---
+# Get the absolute path of the directory where the current script is located (src)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Get the project root directory
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
 
-# --- Basic App Setup ---
+# --- Path Resolution ---
+# Standard path for templates (e.g., src/templates)
+templates_path_in_src = os.path.join(BASE_DIR, "templates")
+# Alternative path for templates (e.g., <project_root>/templates)
+templates_path_in_root = os.path.join(PROJECT_ROOT, "templates")
+
+TEMPLATES_DIR = None
+if os.path.isdir(templates_path_in_src):
+    TEMPLATES_DIR = templates_path_in_src
+elif os.path.isdir(templates_path_in_root):
+    TEMPLATES_DIR = templates_path_in_root
+else:
+    raise RuntimeError(
+        "Templates directory not found. Please ensure it exists at "
+        f"'{templates_path_in_src}' or '{templates_path_in_root}'"
+    )
+
+# Static files directory (e.g., src/static)
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
+
+# --- FastAPI App Initialization ---
 app = FastAPI()
 
-# --- 3. แก้ไขส่วนนี้ทั้งหมด ---
-# สร้างเส้นทาง (path) ที่สมบูรณ์ไปยังโฟลเดอร์ต่างๆ
-# เพื่อให้ FastAPI หาโฟลเดอร์ templates และ static เจอเสมอ
-BASE_DIR = Path(__file__).resolve().parent.parent
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=BASE_DIR / "templates")
-# --- สิ้นสุดส่วนที่แก้ไข ---
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+# Mount static files
+if not os.path.isdir(STATIC_DIR):
+    os.makedirs(STATIC_DIR, exist_ok=True)
+    print(f"Created static directory at: {STATIC_DIR}")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-# --- In-memory state management ---
-# These variables will hold the current state of the application.
-# In a real-world scenario, you might use a database or a more robust state management solution.
-# --- CHANGED: Updated shelf dimensions to 4x6 ---
-SHELF_ROWS = 4
-SHELF_COLS = 6
-job_queue: List[Job] = []
-active_job: Optional[Job] = None
-# Initialize an empty shelf state
-global_shelf_state = [[False for _ in range(SHELF_COLS)] for _ in range(SHELF_ROWS)]
-
-# --- WebSocket Connection Manager ---
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        print(f"New client connected. Total clients: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-        print(f"Client disconnected. Total clients: {len(self.active_connections)}")
-
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
-
-manager = ConnectionManager()
-
-# --- API Endpoint to receive new jobs ---
-@app.post("/api/submit_job")
-async def submit_job(job: Job):
-    """
-    This endpoint receives a new job from an external system.
-    It updates the application's state and broadcasts the new state to all connected clients.
-    """
-    global active_job, job_queue, global_shelf_state
-
-    print(f"Received new job: {job.lotNo}")
-
-    # Set the new job as the active job and update the queue
-    # For simplicity, we'll only show the latest job in the queue
-    active_job = job
-    job_queue = [job]
-
-    # Update the shelf state based on the new job's location
-    # 1. Reset the entire shelf state
-    global_shelf_state = [[False for _ in range(SHELF_COLS)] for _ in range(SHELF_ROWS)]
-    # 2. If the new job has a location, mark it as active
-    if job.location:
-        if 0 <= job.location.row < SHELF_ROWS and 0 <= job.location.col < SHELF_COLS:
-            global_shelf_state[job.location.row][job.location.col] = True
-        else:
-            print(f"Warning: Job location {job.location} is out of bounds for the shelf.")
+# --- WebSocket Management ---
+active_connections: list[WebSocket] = []
+shelf_data_queue = Queue()
 
 
-    # Prepare the data packet to be sent to the UI
-    update_data = {
-        "type": "job_update",
-        "job": active_job.model_dump(),  # Use .model_dump() for Pydantic v2+
-        "shelf_state": global_shelf_state,
+# --- Job Queue Management ---
+job_queue = []  # เก็บรายการ Lot jobs
+
+def add_job_to_queue(lot_id: str, emp_id: str):
+    """เพิ่ม job ใหม่เข้า queue"""
+    job = {
+        "lot_id": lot_id,
+        "emp_id": emp_id,
+        "status": "pending",
+        "created_at": asyncio.get_event_loop().time()
     }
+    job_queue.append(job)
+    logging.info(f"➕ Added new job to queue: Lot {lot_id}, Employee {emp_id}")
+    return job
 
-    # Broadcast the update to all connected WebSocket clients
-    await manager.broadcast(json.dumps(update_data))
+def get_job_queue():
+    """ดึงรายการ jobs ทั้งหมด"""
+    logging.info(f"📋 Retrieved job queue with {len(job_queue)} jobs")
+    return job_queue
 
-    return {"status": "success", "message": f"Job {job.lotNo} received and broadcasted."}
+def select_job(lot_id: str):
+    """เลือก job จาก queue"""
+    for job in job_queue:
+        if job["lot_id"] == lot_id and job["status"] == "pending":
+            job["status"] = "selected"
+            logging.info(f"✅ Selected job: Lot {lot_id}")
+            return job
+    logging.warning(f"⚠️ Job not found or already selected: Lot {lot_id}")
+    return None
 
 
-# --- WebSocket Endpoint for real-time UI updates ---
+# --- Background RFID Reader Process ---
+def start_rfid_reader_process(queue: Queue):
+    """
+    Initializes and runs the RFID reader in a separate process.
+    (This is a placeholder for the actual RFID reader logic)
+    """
+    print("RFID Reader process started.")
+    import time
+    import random
+
+    while True:
+        # Simulate reading a tag
+        tag_id = f"TAG{random.randint(100, 999)}"
+        # Simulate an action
+        action = random.choice(["added", "removed"])
+        data = {"tag_id": tag_id, "action": action}
+        print(f"Reader simulated data: {data}")
+        queue.put(json.dumps(data))
+        time.sleep(5)  # Simulate delay
+
+
+# --- Application Event Handlers ---
+@app.on_event("startup")
+async def startup_event():
+    """
+    Starts the background process for the RFID reader when the app starts.
+    """
+    print("Application startup...")
+    # Start the RFID reader in a separate process
+    rfid_process = Process(target=start_rfid_reader_process, args=(shelf_data_queue,))
+    rfid_process.daemon = True
+    rfid_process.start()
+    print("RFID reader process initiated.")
+
+
+# --- WebSocket Endpoint ---
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    """
+    Handles WebSocket connections for real-time updates.
+    """
+    await websocket.accept()
+    active_connections.append(websocket)
+    logging.info(f"🔌 WebSocket connection established. Total clients: {len(active_connections)}")
+
     try:
-        # When a client first connects, send them the current state
-        # This ensures the UI is populated immediately without waiting for a new job
-        if active_job:
-            initial_data = {
-                "type": "job_update",
-                "job": active_job.model_dump(),
-                "shelf_state": global_shelf_state,
-            }
-            await websocket.send_text(json.dumps(initial_data))
-
-        # Keep the connection alive to receive further updates
+        # Send data from the queue to the client
         while True:
-            # We are just keeping the connection open.
-            # The server will proactively push updates via manager.broadcast()
-            # The client doesn't need to send any messages.
-            await asyncio.sleep(1)
-            
+            if not shelf_data_queue.empty():
+                data = shelf_data_queue.get()
+                logging.info(f"📤 Sending data to client: {data}")
+                await websocket.send_text(data)
+            await asyncio.sleep(0.1)  # Small delay to prevent busy-waiting
+
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        active_connections.remove(websocket)
+        logging.warning(f"🔌 WebSocket connection closed. Total clients: {len(active_connections)}")
     except Exception as e:
-        print(f"An error occurred in the WebSocket connection: {e}")
-        manager.disconnect(websocket)
+        logging.error(f"❌ An error occurred in WebSocket: {e}")
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 
-# --- Frontend Endpoint to serve the HTML page ---
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
+    """Serves the main shelf UI page."""
+    logging.info("🏠 Serving main shelf UI page")
     return templates.TemplateResponse("shelf_ui.html", {"request": request})
 
+
+# --- Main Execution ---
 if __name__ == "__main__":
-    import uvicorn
-    # Important: When running this script directly, it assumes you are in the 'src' directory.
-    # The recommended way to run is `uvicorn src.main:app --reload` from the project root.
+    # To run for development:
+    # uvicorn src.main:app --reload
+    # This command should be run from the project's root directory (RFID-smart-shelf-pi).
     uvicorn.run(app, host="0.0.0.0", port=8000)
