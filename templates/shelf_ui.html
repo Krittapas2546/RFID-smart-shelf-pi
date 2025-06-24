@@ -284,41 +284,64 @@
 
             ws.onopen = function(event) {
                 console.log("WebSocket connection established.");
-            };
-
-            ws.onmessage = function(event) {
+            };            ws.onmessage = function(event) {
                 console.log("Data from server:", event.data);
                 try {
                     const data = JSON.parse(event.data);
                     
-                    // แปลงข้อมูลจาก server ให้เป็น Job Object ที่ Frontend เข้าใจ
-                    const newJob = {
-                        lotNo: data.tag_id, // ใช้ tag_id แทน lotNo
-                        employeeId: 'EMP' + Math.floor(100 + Math.random() * 900), // สร้าง ID พนักงานจำลอง
-                        status: data.action === 'added' ? 'Waiting' : 'Processing', // แปลง action เป็น status
-                        from: 'Station A', // ข้อมูลจำลอง
-                        timestamp: new Date().toLocaleTimeString('th-TH'), // เวลาปัจจุบัน
-                        location: { // ตำแหน่งจำลองบนชั้นวาง
-                            row: Math.floor(Math.random() * ROWS) + 1,
-                            col: Math.floor(Math.random() * COLS) + 1
-                        },
-                        error: false,
-                        // เพิ่ม ID ที่ไม่ซ้ำกันสำหรับแต่ละ Job เพื่อการจัดการที่ง่ายขึ้น
-                        jobId: `job-${Date.now()}-${Math.random()}` 
-                    };
-
-                    const queue = getQueue();
+                    let newJob;
+                    
+                    // ตรวจสอบว่าข้อมูลมาจาก job socket server (มี lotNo) หรือ RFID simulator (มี tag_id)
+                    if (data.lotNo) {
+                        // ข้อมูลจาก job socket server
+                        newJob = {
+                            lotNo: data.lotNo,
+                            employeeId: data.employeeId || 'N/A',
+                            status: data.status || 'Waiting',
+                            from: data.from || 'Unknown',
+                            timestamp: data.timestamp || new Date().toLocaleTimeString('th-TH'),
+                            location: data.location || {
+                                row: Math.floor(Math.random() * ROWS) + 1,
+                                col: Math.floor(Math.random() * COLS) + 1
+                            },
+                            error: data.error || false,
+                            jobId: `job-${Date.now()}-${Math.random()}`
+                        };
+                    } else if (data.tag_id) {
+                        // ข้อมูลจาก RFID simulator (legacy format)
+                        newJob = {
+                            lotNo: data.tag_id,
+                            employeeId: 'EMP' + Math.floor(100 + Math.random() * 900),
+                            status: data.action === 'added' ? 'Waiting' : 'Processing',
+                            from: 'Station A',
+                            timestamp: new Date().toLocaleTimeString('th-TH'),
+                            location: {
+                                row: Math.floor(Math.random() * ROWS) + 1,
+                                col: Math.floor(Math.random() * COLS) + 1
+                            },
+                            error: false,
+                            jobId: `job-${Date.now()}-${Math.random()}`
+                        };
+                    } else {
+                        console.warn("Unknown data format:", data);
+                        return;
+                    }                    const queue = getQueue();
                     
                     // เช็คว่ามี job ที่มี lotNo เดียวกันและยัง active อยู่หรือไม่
                     const existingJobIndex = queue.findIndex(job => job.lotNo === newJob.lotNo);
 
-                    if (newJob.status === 'Processing') { // 'removed' action
+                    if (newJob.status === 'Processing' || (data.action && data.action === 'removed')) {
+                        // ลบ job ออกจากคิว
                         if (existingJobIndex > -1) {
-                            queue.splice(existingJobIndex, 1); // นำออกจากคิว
+                            queue.splice(existingJobIndex, 1);
                         }
-                    } else { // 'added' action
-                         if (existingJobIndex === -1) {
+                    } else {
+                        // เพิ่ม job ใหม่ถ้ายังไม่มีในคิว
+                        if (existingJobIndex === -1) {
                             queue.push(newJob);
+                        } else {
+                            // อัปเดต job ที่มีอยู่แล้ว
+                            queue[existingJobIndex] = newJob;
                         }
                     }
 
