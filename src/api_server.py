@@ -48,7 +48,7 @@ class ShelfStateManager:
         return self.grid_state
 
 # Initialize the manager for a 5x5 grid
-shelf_state_manager = ShelfStateManager(rows=5, cols=5)
+shelf_state_manager = ShelfStateManager(rows=4, cols=6)
 
 # --- Socket Server for RFID Reader ---
 async def run_socket_server(host='0.0.0.0', port=65432):
