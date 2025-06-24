@@ -1,0 +1,104 @@
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: #f0f2f5;
+    margin: 0;
+    padding: 20px;
+}
+
+.App {
+    text-align: center;
+    width: 100%;
+    max-width: 1600px;
+    margin: 0 auto;
+}
+
+h1 {
+    font-size: 2.2rem;
+    color: #333;
+    margin-bottom: 25px;
+}
+
+.shelf-container {
+    padding: 20px;
+    background-color: #ffffff;
+    border: 1px solid #d9d9d9;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+.shelf-grid {
+    display: grid;
+    /* กำหนดให้มี 10 คอลัมน์เหมือนในแอป Tkinter เดิม */
+    grid-template-columns: repeat(10, 1fr);
+    gap: 10px;
+}
+
+.shelf-item {
+    background-color: #fafafa;
+    border: 1px solid #e8e8e8;
+    border-radius: 6px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 120px;
+    font-size: 0.8rem;
+    transition: transform 0.2s, box-shadow 0.2s, background-color 0.3s;
+    border-left: 5px solid #ccc; /* สีขอบซ้าย default */
+    text-align: left;
+    word-wrap: break-word;
+}
+
+.shelf-item:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 6px 14px rgba(0,0,0,0.1);
+}
+
+.item-details {
+    color: #333;
+    margin-bottom: 5px;
+    flex-grow: 1;
+    font-size: 0.8rem;
+}
+
+.item-name {
+    color: #888;
+    flex-grow: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+}
+
+.item-id {
+    font-size: 0.8rem;
+    color: #888;
+    font-weight: bold;
+    align-self: flex-end;
+}
+
+/* --- Status Colors --- */
+.shelf-item.empty {
+    background-color: #fdfdfd;
+    border-left-color: #d9d9d9; /* สีเทาสำหรับช่องว่าง */
+}
+
+.shelf-item.occupied {
+    border-left-color: #1890ff; /* สีฟ้าสำหรับช่องที่มีของ */
+    background-color: #e6f7ff; /* สีพื้นหลังฟ้าอ่อน */
+}
+
+/* --- Status Messages --- */
+.status-message {
+    font-size: 1.2rem;
+    color: #6c757d;
+    padding: 40px;
+    text-align: center;
+}
+.status-message.error {
+    color: #dc3545;
+    font-weight: bold;
+    background-color: #fff0f0;
+    border: 1px solid #ffc0c0;
+    border-radius: 8px;
+}
