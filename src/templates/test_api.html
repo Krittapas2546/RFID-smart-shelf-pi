@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>Test API - Smart Shelf Simulator</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; margin: 2em; background-color: #f0f2f5; }
+        .container { max-width: 700px; margin: auto; background: #fff; padding: 2em; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1, h2, h3 { color: #0056b3; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5em; }
+        label { display: block; margin-bottom: .5em; font-weight: 600; }
+        input, select { width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+        button { width: 100%; padding: 12px; font-size: 1.1em; cursor: pointer; border: none; border-radius: 5px; margin-top: 1em; color: white; }
+        .primary-btn { background-color: #0d6efd; }
+        .success-btn { background-color: #198754; }
+        .danger-btn { background-color: #dc3545; }
+        pre { background-color: #2d333b; color: #cdd9e5; padding: 1em; border-radius: 5px; }
+        hr { border: none; border-top: 1px solid #eee; margin: 2em 0; }
+        /* >> CSS ใหม่สำหรับ Grid << */
+        .stk-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; margin: 12px 0 20px 0; }
+        .stk-cell { aspect-ratio: 1 / 1; border: 1px solid #aaa; border-radius: 4px; background: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #888; }
+        .stk-cell.has-item { background: #28a745; color: #fff; border-color: #28a745; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Smart Shelf - Event Simulator</h1>
+        
+        <!-- >> ส่วนใหม่: Shelf State Editor << -->
+        <h2>Shelf State Editor</h2>
+        <p>คลิกที่ช่องเพื่อกำหนดว่าช่องนั้น "มีของ" หรือ "ว่าง" (สถานะนี้จะถูกใช้เมื่อสร้างงานใหม่)</p>
+        <div id="globalShelfGrid" class="stk-grid"></div>
+
+        <hr>
+
+        <h2>1. Create New Job</h2>
+        <div class="form-grid" oninput="updateJsonPreview()">
+            <div class="form-group"><label>Action</label><select id="action"><option value="PUT">วาง (Put)</option><option value="PICK">หยิบ (Pick)</option></select></div>
+            <div class="form-group"><label>Lot No.</label><input type="text" id="lot_no" value="123456"></div>
+            <div class="form-group"><label>From</label><input type="text" id="from_shelf" value="A"></div>
+            <div class="form-group"><label>Employee ID</label><input type="text" id="emp_id" value="2025014"></div>
+            <div class="form-group" style="grid-column: 1 / -1;"><label>Task Location (Row-Col)</label><div style="display: flex; gap: 1em;"><input type="number" id="loc_row" value="1" min="1" max="4"><input type="number" id="loc_col" value="1" min="1" max="6"></div></div>
+        </div>
+        <button onclick="scanNewLot()" class="primary-btn">Add New Job to Queue</button>
+        <h3>JSON Preview (for new job)</h3>
+                <h2>2. Simulate Operator Actions</h2>
+        <button onclick="simulateTaskComplete()" class="success-btn">Simulate Task Complete</button>
+        <button onclick="simulateWrongPick()" class="danger-btn">Simulate Wrong Pick</button>
+        <pre><code id="json-preview"></code></pre>
+        
+
+        <hr>
+
+
+        
+        <hr>
+
+        <!-- >> ส่วนใหม่: System Controls << -->
+        <h2>System Controls</h2>
+        <button onclick="clearAllData()" class="danger-btn">Clear All Data (Reset System)</button>
+
+
+        <div id="status-message" style="margin-top: 1em; font-weight: bold; text-align: center; min-height: 20px;"></div>
+        <div style="margin-top: 2em; text-align: center;"><a href="/" target="_blank">Open Shelf UI</a></div>
+    </div>
+
+    <script>
+        const ROWS = 4, COLS = 6;
+        const GLOBAL_SHELF_STATE_KEY = 'globalShelfState';
+
+        function getGlobalShelfState() { return JSON.parse(localStorage.getItem(GLOBAL_SHELF_STATE_KEY) || '[]'); }
+        function setGlobalShelfState(state) { localStorage.setItem(GLOBAL_SHELF_STATE_KEY, JSON.stringify(state)); }
+
+        function initializeGlobalShelfState() {
+            if (getGlobalShelfState().length > 0) return;
+            const initialState = Array.from({ length: ROWS * COLS }, (_, i) => {
+                const r = Math.floor(i / COLS) + 1;
+                const c = (i % COLS) + 1;
+                return [r * 10 + c, 0];
+            });
+            setGlobalShelfState(initialState);
+        }
+
+        // >> ฟังก์ชันใหม่: วาด Grid สำหรับแก้ไข <<
+        function renderGlobalShelfGrid() {
+            const gridEl = document.getElementById('globalShelfGrid');
+            const shelfState = getGlobalShelfState();
+            gridEl.innerHTML = '';
+            shelfState.forEach(([pos, hasItem]) => {
+                const cell = document.createElement('div');
+                cell.className = 'stk-cell' + (hasItem ? ' has-item' : '');
+                const r = Math.floor(pos / 10);
+                const c = pos % 10;
+                cell.textContent = `${r}${c}`;
+                cell.onclick = () => toggleShelfItem(pos);
+                gridEl.appendChild(cell);
+            });
+        }
+
+        // >> ฟังก์ชันใหม่: สลับสถานะของในช่อง <<
+        function toggleShelfItem(position) {
+            const shelfState = getGlobalShelfState();
+            const itemIndex = shelfState.findIndex(([pos]) => pos === position);
+            if (itemIndex > -1) {
+                shelfState[itemIndex][1] = shelfState[itemIndex][1] === 0 ? 1 : 0; // Toggle 0 and 1
+                setGlobalShelfState(shelfState);
+                renderGlobalShelfGrid(); // วาด Grid ใหม่
+                updateJsonPreview();   // อัปเดต Preview
+            }
+        }
+
+        function buildJobObject() {
+             return {
+                jobId: `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, 
+                action: document.getElementById('action').value,
+                status: "Waiting",
+                lotNo: document.getElementById('lot_no').value,
+                from: document.getElementById('from_shelf').value,
+                employeeId: document.getElementById('emp_id').value,
+                location: {
+                    row: parseInt(document.getElementById('loc_row').value),
+                    col: parseInt(document.getElementById('loc_col').value)
+                },
+                PositionSTK: getGlobalShelfState(), // Snapshot state ปัจจุบัน
+                timestamp: new Date().toLocaleTimeString('th-TH'),
+                error: null
+            };
+        }
+
+        function updateJsonPreview() {
+            const { jobId, ...previewJob } = buildJobObject();
+            document.getElementById('json-preview').textContent = JSON.stringify(previewJob, null, 4);
+        }
+
+        function scanNewLot() {
+            const queue = JSON.parse(localStorage.getItem('shelfQueue') || '[]');
+            queue.push(buildJobObject());
+            localStorage.setItem('shelfQueue', JSON.stringify(queue));
+            showStatus('SUCCESS: Added new job to queue!', 'green');
+        }
+
+        function simulateTaskComplete() {
+            const activeJob = JSON.parse(localStorage.getItem('activeShelfJob') || 'null');
+            if (!activeJob) return showStatus('ERROR: No active job selected.', 'red');
+            
+            const shelfState = getGlobalShelfState();
+            const jobLocation = activeJob.location.row * 10 + activeJob.location.col;
+            const itemState = activeJob.action === 'PUT' ? 1 : 0;
+            const itemIndex = shelfState.findIndex(([pos]) => pos === jobLocation);
+            if (itemIndex > -1) shelfState[itemIndex][1] = itemState;
+            setGlobalShelfState(shelfState);
+
+            const queue = (JSON.parse(localStorage.getItem('shelfQueue') || '[]')).filter(j => j.jobId !== activeJob.jobId);
+            localStorage.setItem('shelfQueue', JSON.stringify(queue));
+            localStorage.removeItem('activeShelfJob');
+            
+            renderGlobalShelfGrid(); // อัปเดต Grid หลังทำงานเสร็จ
+            showStatus(`SUCCESS: Job for Lot ${activeJob.lotNo} is complete.`, 'green');
+        }
+        
+        // >> ฟังก์ชันใหม่: ล้างข้อมูลทั้งหมด <<
+        function clearAllData() {
+            if (confirm('Are you sure you want to clear all jobs and reset the shelf? This cannot be undone.')) {
+                localStorage.removeItem('shelfQueue');
+                localStorage.removeItem('activeShelfJob');
+                localStorage.removeItem(GLOBAL_SHELF_STATE_KEY);
+                initializeGlobalShelfState();
+                renderGlobalShelfGrid();
+                updateJsonPreview();
+                showStatus('SYSTEM RESET: All data has been cleared.', 'orange');
+            }
+        }
+
+        function showStatus(message, color) {
+            const statusDiv = document.getElementById('status-message');
+            statusDiv.textContent = message;
+            statusDiv.style.color = color;
+        }
+
+        // --- Initial Load ---
+        initializeGlobalShelfState();
+        renderGlobalShelfGrid();
+        updateJsonPreview();
+    </script>
+</body>
+</html>
