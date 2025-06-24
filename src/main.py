@@ -3,8 +3,10 @@ import json
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles  # <-- 1. เพิ่ม import นี้
 from pydantic import BaseModel
 from typing import List, Optional
+from pathlib import Path  # <-- 2. เพิ่ม import นี้
 
 # --- Models for incoming data ---
 class Location(BaseModel):
@@ -22,7 +24,15 @@ class Job(BaseModel):
 
 # --- Basic App Setup ---
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
+
+# --- 3. แก้ไขส่วนนี้ทั้งหมด ---
+# สร้างเส้นทาง (path) ที่สมบูรณ์ไปยังโฟลเดอร์ต่างๆ
+# เพื่อให้ FastAPI หาโฟลเดอร์ templates และ static เจอเสมอ
+BASE_DIR = Path(__file__).resolve().parent.parent
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+templates = Jinja2Templates(directory=BASE_DIR / "templates")
+# --- สิ้นสุดส่วนที่แก้ไข ---
+
 
 # --- In-memory state management ---
 # These variables will hold the current state of the application.
@@ -128,3 +138,9 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("shelf_ui.html", {"request": request})
+
+if __name__ == "__main__":
+    import uvicorn
+    # Important: When running this script directly, it assumes you are in the 'src' directory.
+    # The recommended way to run is `uvicorn src.main:app --reload` from the project root.
+    uvicorn.run(app, host="0.0.0.0", port=8000)
