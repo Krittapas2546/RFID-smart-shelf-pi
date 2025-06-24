@@ -153,3 +153,4 @@ async def websocket_endpoint(websocket: WebSocket):
         logging.warning(f"WebSocket client disconnected: {websocket.client.host}")
     except Exception as e:
         logging.error(f"Error in WebSocket communication: {e}")
+
