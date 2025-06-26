@@ -77,17 +77,12 @@ def handle_job_client(conn, addr):
                 logging.info(f"📥 Received job data:")
                 logging.info(json.dumps(job_data, indent=2))
                 
-                # ตรวจสอบและประมวลผล PUT/GET actions
-                processed_job = process_job_action(job_data)
-                
-                # ส่งข้อมูลที่ประมวลผลแล้วเข้า queue
-                shelf_data_queue.put(json.dumps(processed_job))
-                logging.info(f"✅ Job data processed and added to queue")
+                # ส่งข้อมูลเข้า queue เพื่อให้ WebSocket ส่งต่อไปยัง frontend
+                shelf_data_queue.put(json.dumps(job_data))
+                logging.info(f"✅ Job data added to queue")
                 
                 # ส่งข้อความยืนยันกลับไป
-                action_text = "วางชิ้นงาน" if job_data.get('action') == 'PUT' else "เอาชิ้นงานออก"
-                status_text = "✅ สำเร็จ" if not processed_job.get('error') else "❌ ผิดพลาด"
-                confirmation = f"{status_text} {action_text}: {job_data.get('lotNo', 'N/A')}"
+                confirmation = "✅ Job Received and Added to Queue"
                 conn.sendall(confirmation.encode('utf-8'))
                 
             except json.JSONDecodeError as e:
@@ -165,72 +160,6 @@ async def startup_event():
     # rfid_process.daemon = True
     # rfid_process.start()
     print("RFID reader process disabled - ready for external job data.")
-
-
-# --- Job Tracking System ---
-# เก็บสถานะชิ้นงานในระบบ
-active_jobs = {}  # {"LOT-001": {"location": (1,1), "employee": "EMP001", "timestamp": "..."}}
-
-def process_job_action(job_data):
-    """ประมวลผล PUT/GET actions และตรวจสอบความถูกต้อง"""
-    action = job_data.get('action', '')
-    lot_no = job_data.get('lotNo', '')
-    employee_id = job_data.get('employeeId', '')
-    location = job_data.get('location', {})
-    current_row = location.get('row', 0)
-    current_col = location.get('col', 0)
-    
-    # สร้างสำเนาของ job_data เพื่อแก้ไข
-    processed_job = job_data.copy()
-    
-    if action == 'PUT':
-        # การวางชิ้นงาน
-        if lot_no in active_jobs:
-            # ชิ้นงานมีอยู่แล้ว - ผิดพลาด            processed_job['error'] = f"❌ Lot {lot_no} already exists in system"
-            processed_job['status'] = 'Error'
-            logging.warning(f"PUT Error: {lot_no} already exists")
-        else:
-            # วางชิ้นงานใหม่ - สำเร็จ
-            active_jobs[lot_no] = {
-                'location': (current_row, current_col),
-                'employee': employee_id,
-                'timestamp': job_data.get('timestamp', ''),
-                'from': job_data.get('from', '')
-            }
-            processed_job['error'] = None
-            processed_job['status'] = 'Waiting'
-            logging.info(f"PUT Success: {lot_no} placed at ({current_row},{current_col})")
-    
-    elif action == 'GET':
-        # การเอาชิ้นงานออก
-        if lot_no not in active_jobs:
-            # ไม่มีชิ้นงานในระบบ - ผิดพลาด
-            processed_job['error'] = f"❌ Lot {lot_no} not found in system"
-            processed_job['status'] = 'Error'
-            logging.warning(f"GET Error: {lot_no} not found")
-        else:
-            stored_job = active_jobs[lot_no]
-            stored_location = stored_job['location']
-            
-            # ตรวจสอบตำแหน่งเท่านั้น
-            if (current_row, current_col) != stored_location:
-                processed_job['error'] = f"❌ Wrong position! Expected {stored_location}, got ({current_row},{current_col})"
-                processed_job['status'] = 'Error'
-                logging.warning(f"GET Error: {lot_no} wrong position - expected {stored_location}, got ({current_row},{current_col})")
-            else:
-                # ตำแหน่งถูกต้อง - เอาออกจากระบบ
-                del active_jobs[lot_no]
-                processed_job['error'] = None
-                processed_job['status'] = 'Completed'
-                logging.info(f"GET Success: {lot_no} removed from ({current_row},{current_col})")
-    
-    else:
-        # Action ที่ไม่รู้จัก
-        processed_job['error'] = f"❌ Unknown action: {action}"
-        processed_job['status'] = 'Error'
-        logging.warning(f"Unknown action: {action}")
-    
-    return processed_job
 
 
 # --- WebSocket Endpoint ---

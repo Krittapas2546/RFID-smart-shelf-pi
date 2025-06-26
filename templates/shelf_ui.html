@@ -42,12 +42,9 @@
         .queue-header { font-size: 2em; font-weight: 700; margin-bottom: 16px; margin-top: 0; }
         .queue-list { flex: 1; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
         .queue-item { display: flex; justify-content: space-between; align-items: center; padding: 18px 0 12px 0; border-bottom: 1px solid #eee; gap: 8px; }
-        .queue-item-error { background-color: #fff5f5; border-left: 4px solid #dc3545; padding-left: 12px; }
         .queue-item-details { display: flex; flex-direction: column; line-height: 1.3; }
         .queue-lot-no { font-weight: 600; font-size: 1.1em; }
         .queue-emp-id { font-size: 14px; color: #6c757d; }
-        .queue-error { font-size: 12px; color: #dc3545; margin-top: 4px; font-weight: 500; }
-        .queue-status.error { font-size: 12px; color: #dc3545; margin-top: 4px; font-weight: 600; }
         .queue-item button { font-size: 15px; padding: 6px 22px; cursor: pointer; background-color: #198754; color: white; border: none; border-radius: 6px; font-weight: 600; }
         .queue-placeholder { color: #6c757d; font-style: italic; margin-top: 20px; }
         .drawer-backdrop { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.07); z-index: 50; display: none; }
@@ -193,21 +190,15 @@
             if (queue.length === 0) {
                 queueListEl.innerHTML = '<li class="queue-placeholder">No jobs in queue...</li>';
                 return;
-            }            queue.forEach((job, index) => {
+            }
+
+            queue.forEach((job, index) => {
                 const item = document.createElement('li');
                 item.className = 'queue-item';
-                
-                // เพิ่มคลาสสำหรับ error
-                if (job.error || job.status === 'Error') {
-                    item.classList.add('queue-item-error');
-                }
-                
                 item.innerHTML = `
                     <div class="queue-item-details">
                         <span class="queue-lot-no">Lot: ${job.lotNo}</span>
                         <span class="queue-emp-id">Emp: ${job.employeeId}</span>
-                        ${job.error ? `<span class="queue-error">⚠️ ${job.error}</span>` : ''}
-                        ${job.status === 'Error' ? `<span class="queue-status error">❌ Error</span>` : ''}
                     </div>
                     <button data-job-index="${index}">Select</button>
                 `;
@@ -286,39 +277,6 @@
             }
         }
         
-        function manageJobSelection(queue) {
-            const activeJob = getActiveJob();
-            
-            if (queue.length === 0) {
-                // ไม่มี job ในคิว - ล้าง active job
-                if (activeJob) {
-                    localStorage.removeItem(ACTIVE_JOB_KEY);
-                }
-            } else if (queue.length === 1 && !activeJob) {
-                // มี job เดียวและไม่มี active job - เลือกอัตโนมัติ
-                setActiveJob(queue[0]);
-                console.log(`🎯 Auto-selected job: ${queue[0].lotNo}`);
-            } else if (queue.length > 1 && !activeJob) {
-                // มีหลาย job และไม่มี active job - แสดงให้เลือก
-                console.log(`📋 Multiple jobs available (${queue.length}). Please select one.`);
-                // ไม่เลือกอัตโนมัติ ให้ user เลือกเอง
-            } else if (activeJob) {
-                // มี active job แล้ว - ตรวจสอบว่ายังอยู่ในคิวหรือไม่
-                const activeJobStillInQueue = queue.find(job => job.lotNo === activeJob.lotNo);
-                if (!activeJobStillInQueue) {
-                    // Active job ไม่อยู่ในคิวแล้ว - ล้างและเลือกใหม่
-                    localStorage.removeItem(ACTIVE_JOB_KEY);
-                    if (queue.length === 1) {
-                        setActiveJob(queue[0]);
-                        console.log(`🔄 Switched to new job: ${queue[0].lotNo}`);
-                    }
-                } else {
-                    // อัปเดต active job ด้วยข้อมูลล่าสุด
-                    setActiveJob(activeJobStillInQueue);
-                }
-            }
-        }
-
         // --- WebSocket Connection ---
         function connectWebSocket() {
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -369,49 +327,27 @@
                         return;
                     }                    const queue = getQueue();
                     
-                    // จัดการคิวตาม action และ status
+                    // เช็คว่ามี job ที่มี lotNo เดียวกันและยัง active อยู่หรือไม่
                     const existingJobIndex = queue.findIndex(job => job.lotNo === newJob.lotNo);
-                    
-                    if (data.action === 'PUT') {
-                        // PUT action - เพิ่มเข้าคิว
-                        if (existingJobIndex === -1) {
-                            queue.push(newJob);
-                            console.log(`✅ Added ${newJob.lotNo} to queue`);
-                        } else {
-                            // อัปเดต job ที่มีอยู่แล้ว
-                            queue[existingJobIndex] = newJob;
-                            console.log(`🔄 Updated ${newJob.lotNo} in queue`);
-                        }
-                    } else if (data.action === 'GET') {
-                        if (existingJobIndex > -1) {
-                            if (newJob.status === 'Completed') {
-                                // GET สำเร็จ - เอาออกจากคิว
-                                queue.splice(existingJobIndex, 1);
-                                console.log(`✅ Removed ${newJob.lotNo} from queue (completed)`);
-                            } else if (newJob.status === 'Error') {
-                                // GET ผิดพลาด - อัปเดตแต่ค้างในคิว
-                                queue[existingJobIndex] = newJob;
-                                console.log(`❌ Updated ${newJob.lotNo} with error (kept in queue)`);
-                            }
-                        }
-                    } else if (data.action === 'removed' || newJob.status === 'Processing') {
-                        // Legacy format - ลบออกจากคิว
+
+                    if (newJob.status === 'Processing' || (data.action && data.action === 'removed')) {
+                        // ลบ job ออกจากคิว
                         if (existingJobIndex > -1) {
                             queue.splice(existingJobIndex, 1);
                         }
                     } else {
-                        // กรณีอื่น ๆ - เพิ่มหรืออัปเดต
+                        // เพิ่ม job ใหม่ถ้ายังไม่มีในคิว
                         if (existingJobIndex === -1) {
                             queue.push(newJob);
                         } else {
+                            // อัปเดต job ที่มีอยู่แล้ว
                             queue[existingJobIndex] = newJob;
                         }
                     }
 
                     saveQueue(queue);
 
-                    // จัดการการเลือก Job อัตโนมัติ
-                    manageJobSelection(queue);
+                    // Auto-select a job if it's the only one
                     if (queue.length === 1 && !getActiveJob()) {
                         setActiveJob(queue[0]);
                     } else if (queue.length === 0) {

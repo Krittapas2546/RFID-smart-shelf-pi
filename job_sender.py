@@ -28,7 +28,8 @@ def send_job_to_pi(job_data, host=pi_host_ip, port=65432):  # เปลี่ย
         print(f"An error occurred: {e}")
 
 if __name__ == "__main__":
-
+    # --- สร้างข้อมูลตามโครงสร้าง JSON ใหม่ ---
+    # คุณสามารถแก้ไขค่าต่างๆ ที่นี่ก่อนรันสคริปต์
     job_to_send = {
         "action": "PUT",
         "status": "Waiting",
