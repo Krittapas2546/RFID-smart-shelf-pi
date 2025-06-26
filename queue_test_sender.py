@@ -3,7 +3,7 @@ import json
 import time
 
 class QueueTestSender:
-    def __init__(self, host='127.0.0.1', port=8000):
+    def __init__(self, host='127.0.0.1', port=8001):
         self.host = host
         self.port = port
     
