@@ -2,15 +2,12 @@ import os
 import asyncio
 import json
 import logging
-import time
 from multiprocessing import Process, Queue
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
-import socket
-import threading
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -59,107 +56,70 @@ active_connections: list[WebSocket] = []
 shelf_data_queue = Queue()
 
 
-# --- Socket Server for External Job Data ---
-def handle_job_client(conn, addr):
-    """จัดการ client ที่ส่งข้อมูล job มา"""
-    logging.info(f"🤝 Job client connected from {addr}")
-    try:
-        with conn:
-            # รับข้อมูลทั้งหมดในครั้งเดียว
-            data = conn.recv(4096)  # เพิ่มขนาด buffer
-            if not data:
-                logging.warning("No data received")
-                return
-            
-            try:
-                # แปลง JSON data ที่ได้รับ
-                job_data = json.loads(data.decode('utf-8'))
-                logging.info(f"📥 Received job data:")
-                logging.info(json.dumps(job_data, indent=2))
-                
-                # ส่งข้อมูลเข้า queue เพื่อให้ WebSocket ส่งต่อไปยัง frontend
-                shelf_data_queue.put(json.dumps(job_data))
-                logging.info(f"✅ Job data added to queue")
-                
-                # ส่งข้อความยืนยันกลับไป
-                confirmation = "✅ Job Received and Added to Queue"
-                conn.sendall(confirmation.encode('utf-8'))
-                
-            except json.JSONDecodeError as e:
-                logging.error(f"❌ Failed to decode JSON: {e}")
-                logging.error(f"Raw data received: {data}")
-                error_msg = "Error: Invalid JSON format"
-                conn.sendall(error_msg.encode('utf-8'))
-            except Exception as e:
-                logging.error(f"❌ Error processing job data: {e}")
-                
-    except Exception as e:
-        logging.error(f"❌ Job client error: {e}")
-    finally:
-        logging.info(f"🔌 Job client {addr} disconnected")
+# --- Job Queue Management ---
+job_queue = []  # เก็บรายการ Lot jobs
 
-def start_job_socket_server(host='0.0.0.0', port=8000):
-    """เริ่ม socket server สำหรับรับข้อมูล job จากภายนอก"""
-    try:
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind((host, port))  # ใช้ port 9000
-        server_socket.listen(5)
-        logging.info(f"🚀 Job Socket server listening on {host}:{port}")
-        
-        while True:
-            conn, addr = server_socket.accept()
-            # ใช้ thread ใหม่สำหรับแต่ละ client
-            client_thread = threading.Thread(target=handle_job_client, args=(conn, addr))
-            client_thread.daemon = True
-            client_thread.start()
-            
-    except Exception as e:
-        logging.error(f"❌ Job socket server error: {e}")
+def add_job_to_queue(lot_id: str, emp_id: str):
+    """เพิ่ม job ใหม่เข้า queue"""
+    job = {
+        "lot_id": lot_id,
+        "emp_id": emp_id,
+        "status": "pending",
+        "created_at": asyncio.get_event_loop().time()
+    }
+    job_queue.append(job)
+    logging.info(f"➕ Added new job to queue: Lot {lot_id}, Employee {emp_id}")
+    return job
+
+def get_job_queue():
+    """ดึงรายการ jobs ทั้งหมด"""
+    logging.info(f"📋 Retrieved job queue with {len(job_queue)} jobs")
+    return job_queue
+
+def select_job(lot_id: str):
+    """เลือก job จาก queue"""
+    for job in job_queue:
+        if job["lot_id"] == lot_id and job["status"] == "pending":
+            job["status"] = "selected"
+            logging.info(f"✅ Selected job: Lot {lot_id}")
+            return job
+    logging.warning(f"⚠️ Job not found or already selected: Lot {lot_id}")
+    return None
 
 
 # --- Background RFID Reader Process ---
+def start_rfid_reader_process(queue: Queue):
+    """
+    Initializes and runs the RFID reader in a separate process.
+    (This is a placeholder for the actual RFID reader logic)
+    """
+    print("RFID Reader process started.")
+    import time
+    import random
 
-
-# --- Background RFID Reader Process ---
-# def start_rfid_reader_process(queue: Queue):
-#     """
-#     Initializes and runs the RFID reader in a separate process.
-#     (This is a placeholder for the actual RFID reader logic)
-#     """
-#     print("RFID Reader process started.")
-#     import time
-#     import random
-
-#     while True:
-#         # Simulate reading a tag
-#         tag_id = f"TAG{random.randint(100, 999)}"
-#         # Simulate an action
-#         action = random.choice(["added", "removed"])
-#         data = {"tag_id": tag_id, "action": action}
-#         print(f"Reader simulated data: {data}")
-#         queue.put(json.dumps(data))
-#         time.sleep(5)  # Simulate delay
+    while True:
+        # Simulate reading a tag
+        tag_id = f"TAG{random.randint(100, 999)}"
+        # Simulate an action
+        action = random.choice(["added", "removed"])
+        data = {"tag_id": tag_id, "action": action}
+        print(f"Reader simulated data: {data}")
+        queue.put(json.dumps(data))
+        time.sleep(5)  # Simulate delay
 
 
 # --- Application Event Handlers ---
 @app.on_event("startup")
 async def startup_event():
     """
-    Starts the background process for the RFID reader when the app starts.    """
+    Starts the background process for the RFID reader when the app starts.
+    """
     print("Application startup...")
-    
-    # Start the job socket server in a separate thread (only once)
-    socket_thread = threading.Thread(target=start_job_socket_server, args=('0.0.0.0', 8000))
-    socket_thread.daemon = True
-    socket_thread.start()
-    logging.info("🚀 Job socket server started on port 8000")
-    
     # Start the RFID reader in a separate process
-    # rfid_process = Process(target=start_rfid_reader_process, args=(shelf_data_queue,))
-    # rfid_process.daemon = True
-    # rfid_process.start()
-    print("RFID reader process disabled - ready for external job data.")
+    rfid_process = Process(target=start_rfid_reader_process, args=(shelf_data_queue,))
+    rfid_process.daemon = True
+    rfid_process.start()
+    print("RFID reader process initiated.")
 
 
 # --- WebSocket Endpoint ---
@@ -186,7 +146,8 @@ async def websocket_endpoint(websocket: WebSocket):
         logging.warning(f"🔌 WebSocket connection closed. Total clients: {len(active_connections)}")
     except Exception as e:
         logging.error(f"❌ An error occurred in WebSocket: {e}")
-        if websocket in active_connections:            active_connections.remove(websocket)
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -201,4 +162,4 @@ if __name__ == "__main__":
     # To run for development:
     # uvicorn src.main:app --reload
     # This command should be run from the project's root directory (RFID-smart-shelf-pi).
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
